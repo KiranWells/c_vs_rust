@@ -23,6 +23,7 @@
 /// otherwise does not modify a
 #define mm256_mask_set(a, b, m) a = _mm256_or_pd(_mm256_andnot_pd(m, a), _mm256_and_pd(b, m));
 
+/// Contains all necessary data for generating the image
 struct MandelImage
 {
   unsigned char *data;
@@ -47,6 +48,10 @@ struct MandelImage
   double internal_brightness;
 };
 
+/// Contains the data necessary for the functions in threads.
+///
+/// Ideally, this would be done in a cleaner way. This type is
+/// only necessary to allow for sending data in a single `void*`
 struct PassedData
 {
   struct MandelImage m;
@@ -54,6 +59,7 @@ struct PassedData
   uint thread_id;
 };
 
+/// Contains the thread information for convenience
 struct ThreadPool
 {
   pthread_t *threads;
@@ -112,7 +118,7 @@ double clamp(double x)
 /// calculates the color for a pixel [i,j] of the image
 void calc_pixel_mm(struct MandelImage m, uint i, uint j)
 {
-  // TODO: add julia set capabilites
+  // TODO: add julia set capabilities
   const __m256d mm_ones = _mm256_set1_pd(1.0);
 
   // initialize values
@@ -250,15 +256,16 @@ void calc_image_region(struct MandelImage image, uint start_height, uint thread_
   for (uint j = start_height; j < image.height; j += image.n_threads)
   {
     // progress bar
-    if (thread_id == 0)
+    if (thread_id == 0 && j % (image.n_threads * 4) == 0)
     {
       double percentage = (double)j / (double)image.height;
       printf("\033[2K\033[0GProgress: |");
+      int colors[] = {5, 1, 3, 2, 6, 4};
       // assume 40 characters free for progress bar
       for (double i = 0.; i < 40.; i++)
       {
         if (i / 40.0 < percentage)
-          printf("█");
+          printf("\x1b[9%dm█\x1b[0m", colors[(uint)(i / 40. * 6.)]);
         else
           printf(" ");
       }
@@ -271,6 +278,19 @@ void calc_image_region(struct MandelImage image, uint start_height, uint thread_
       calc_pixel_mm(image, i, j);
     }
   }
+  // print a 100% message. This is not strictly necessary, but it looks nicer
+  if (thread_id != 0)
+  {
+    return;
+  }
+  printf("\033[2K\033[0GProgress: |");
+  int colors[] = {5, 1, 3, 2, 6, 4};
+  // assume 40 characters free for progress bar
+  for (double i = 0.; i < 40.; i++)
+  {
+    printf("\x1b[9%dm█\x1b[0m", colors[(uint)(i / 40. * 6.)]);
+  }
+  printf("| %.2f%%\n", 100.0);
 }
 
 /// extracts the data from the void* to call calc_image_region
@@ -331,6 +351,7 @@ const char USAGE[] = "usage: %s [options] <filename>\n"
                      "\t-t | --threads <int>\tThe number of threads used for computation. \n\t\tDefaults to number of logical cores on the machine.\n"
                      "\n";
 
+/// Creates a new image instance from the process arguments
 struct MandelImage parse_options(char **argv, int argc)
 {
   if (argc < 2)
@@ -473,9 +494,6 @@ struct MandelImage parse_options(char **argv, int argc)
     continue;
   }
 
-  // allocate image data
-  image.data = (unsigned char *)malloc(sizeof(unsigned char) * image.width * image.height * BYTES_PER_PIXEL);
-
   if (image.filename == NULL)
   {
     printf("Output filename required.");
@@ -483,11 +501,14 @@ struct MandelImage parse_options(char **argv, int argc)
     exit(1);
   }
 
+  // allocate image data
+  image.data = (unsigned char *)malloc(sizeof(unsigned char) * image.width * image.height * BYTES_PER_PIXEL);
+
   // print final parsed options
-  printf("Running with options: \n");
+  printf("Running with options: \n\n");
   printf("\tWidth:\t\t\t%d\n", image.width);
   printf("\tHeight:\t\t\t%d\n", image.height);
-  printf("\tScale:\t\t\t%.2f\n", image.scale);
+  // printf("\tScale:\t\t\t%.2f\n", image.scale);
   printf("\tZoom:\t\t\t%.2f\n", image.zoom);
   printf("\tCenter point:\t\t(%.9f, %.9f)\n", image.x_offset, image.y_offset);
   printf("\tMax Iterations:\t\t%d\n", image.max_iter);
@@ -517,13 +538,13 @@ int main(int argc, char **argv)
 
   struct MandelImage image = parse_options(argv, argc);
 
-  printf("\nRendering...\n");
+  printf("Rendering...\n");
   clock_t render_start, render_end;
   render_start = clock();
   run_threads(image);
   render_end = clock();
 
-  printf("\nSaving...\n");
+  printf("Saving...\n");
   clock_t save_start, save_end;
   save_start = clock();
   generateBitmapImage(image.data, image.height, image.width, image.filename);

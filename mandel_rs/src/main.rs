@@ -23,11 +23,8 @@ mod mandel {
     use std::hint::unreachable_unchecked;
     use std::io::Write;
     use std::ptr;
-    use std::simd::{f64x4, Simd, StdFloat};
+    use std::simd::{f64x4, Simd, SimdFloat, SimdPartialOrd, StdFloat};
     use std::slice;
-
-    const MM_ONES: f64x4 = Simd::splat(1.0);
-    const MM_ZERO: f64x4 = Simd::splat(0.0);
 
     /// Contains all necessary data for generating the image
     pub struct MandelImage {
@@ -160,6 +157,8 @@ mod mandel {
             // TODO: add julia set capabilities
 
             // initialize values
+            let mm_ones: f64x4 = Simd::splat(1.0);
+            let mm_zero: f64x4 = Simd::splat(0.0);
 
             // c: complex number
             let c_real = Simd::from_array([
@@ -177,20 +176,20 @@ mod mandel {
             );
 
             // z: complex number
-            let mut z_real = MM_ZERO;
-            let mut z_imag = MM_ZERO;
+            let mut z_real = mm_zero;
+            let mut z_imag = mm_zero;
 
             // z': complex running derivative
-            let mut z_prime_r = MM_ONES;
-            let mut z_prime_i = MM_ONES;
+            let mut z_prime_r = mm_ones;
+            let mut z_prime_i = mm_ones;
 
             // z^2: temporary value for optimized computation
-            let mut real_2 = MM_ZERO;
-            let mut imag_2 = MM_ZERO;
+            let mut real_2 = mm_zero;
+            let mut imag_2 = mm_zero;
 
             // value accumulators for coloring
-            let mut step_acc = MM_ZERO;
-            let mut orbit_acc = MM_ONES;
+            let mut step_acc = mm_zero;
+            let mut orbit_acc = mm_ones;
 
             for _step in 0..self.max_iter {
                 // iterate values, according to z = z^2 + c
@@ -212,14 +211,14 @@ mod mandel {
                 let ac_bd = z_real * z_prime_r - z_imag * z_prime_i;
                 let bc_da = z_imag * z_prime_r + z_real * z_prime_i;
 
-                let z_prime_r_tmp = ac_bd + ac_bd + MM_ONES;
+                let z_prime_r_tmp = ac_bd + ac_bd + mm_ones;
                 let z_prime_i_tmp = bc_da + bc_da;
 
                 let radius_2 = real_2 + imag_2;
 
                 // select lanes which have not escaped
                 // escape of 1000.0 used to smooth distance estimate
-                let mask = radius_2.lanes_lt(Simd::splat(1000.0));
+                let mask = radius_2.simd_lt(Simd::splat(1000.0));
 
                 // conditionally iterate, only if the pixel has not escaped
                 z_real = mask.select(z_real_tmp, z_real);
@@ -230,8 +229,8 @@ mod mandel {
                 real_2 = z_real * z_real;
                 imag_2 = z_imag * z_imag;
 
-                step_acc = mask.select(MM_ONES, MM_ZERO) + step_acc;
-                orbit_acc = orbit_acc.min(real_2 + imag_2);
+                step_acc = mask.select(mm_ones, mm_zero) + step_acc;
+                orbit_acc = orbit_acc.simd_min(real_2 + imag_2);
 
                 // finish if all pixels have escaped
                 if !mask.any() {
@@ -317,7 +316,7 @@ mod mandel {
                     std::io::stdout().flush().unwrap();
                 }
                 // actual calculation
-                for i in (0..self.width).step_by(MM_ONES.lanes()) {
+                for i in (0..self.width).step_by(4) {
                     self.calc_pixel_mm(i, j);
                 }
             }
@@ -466,6 +465,7 @@ mod mandel {
                             std::process::exit(1);
                         }
                     }
+                    Ok::<(), Box<dyn std::error::Error>>(())
                 };
                 if r.is_err() {
                     println!("Failed to read argument: {} {}", arg, next_arg);

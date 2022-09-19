@@ -110,6 +110,22 @@ void set_hsl2rgb(struct MandelImage m, uint x, uint y, double h, double s, doubl
   set(m, x, y, r, g, b);
 }
 
+void print_progress(double percentage)
+{
+  printf("\033[2K\033[0GProgress: |");
+  int colors[] = {5, 1, 3, 2, 6, 4};
+  // assume 40 characters free for progress bar
+  for (double i = 0.; i < 40.; i++)
+  {
+    if (i / 40.0 < percentage)
+      printf("\x1b[9%dm█\x1b[0m", colors[(uint)(i / 40. * 6.)]);
+    else
+      printf(" ");
+  }
+  printf("| %.2f%%", percentage * 100.0);
+  fflush(stdout);
+}
+
 double clamp(double x)
 {
   return x > 1.0 ? 1.0 : (x < 0.0 ? 0.0 : x);
@@ -256,21 +272,10 @@ void calc_image_region(struct MandelImage image, uint start_height, uint thread_
   for (uint j = start_height; j < image.height; j += image.n_threads)
   {
     // progress bar
-    if (thread_id == 0 && j % (image.n_threads * 4) == 0)
+    if (thread_id == 0 && j % 64 == 0)
     {
       double percentage = (double)j / (double)image.height;
-      printf("\033[2K\033[0GProgress: |");
-      int colors[] = {5, 1, 3, 2, 6, 4};
-      // assume 40 characters free for progress bar
-      for (double i = 0.; i < 40.; i++)
-      {
-        if (i / 40.0 < percentage)
-          printf("\x1b[9%dm█\x1b[0m", colors[(uint)(i / 40. * 6.)]);
-        else
-          printf(" ");
-      }
-      printf("| %.2f%%", percentage * 100.0);
-      fflush(stdout);
+      print_progress(percentage);
     }
     // actual calculation
     for (uint i = 0; i < image.width; i += 4)
@@ -279,18 +284,10 @@ void calc_image_region(struct MandelImage image, uint start_height, uint thread_
     }
   }
   // print a 100% message. This is not strictly necessary, but it looks nicer
-  if (thread_id != 0)
+  if (thread_id == 0)
   {
-    return;
+    print_progress(1.0);
   }
-  printf("\033[2K\033[0GProgress: |");
-  int colors[] = {5, 1, 3, 2, 6, 4};
-  // assume 40 characters free for progress bar
-  for (double i = 0.; i < 40.; i++)
-  {
-    printf("\x1b[9%dm█\x1b[0m", colors[(uint)(i / 40. * 6.)]);
-  }
-  printf("| %.2f%%\n", 100.0);
 }
 
 /// extracts the data from the void* to call calc_image_region

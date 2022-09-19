@@ -25,18 +25,43 @@ void generateBitmapImage(unsigned char *image, int height, int width, char *imag
     int stride = (widthInBytes) + paddingSize;
 
     FILE *imageFile = fopen(imageFileName, "wb");
+    if (imageFile == NULL)
+    {
+        perror("fopen");
+        exit(1);
+    }
 
     unsigned char *fileHeader = createBitmapFileHeader(height, stride);
-    fwrite(fileHeader, 1, FILE_HEADER_SIZE, imageFile);
+    size_t written = fwrite(fileHeader, 1, FILE_HEADER_SIZE, imageFile);
+    if (written != FILE_HEADER_SIZE)
+    {
+        perror("fwrite");
+        exit(1);
+    }
 
     unsigned char *infoHeader = createBitmapInfoHeader(height, width);
-    fwrite(infoHeader, 1, INFO_HEADER_SIZE, imageFile);
+    written = fwrite(infoHeader, 1, INFO_HEADER_SIZE, imageFile);
+    if (written != INFO_HEADER_SIZE)
+    {
+        perror("fwrite");
+        exit(1);
+    }
 
     int i;
     for (i = 0; i < height; i++)
     {
-        fwrite(image + (i * widthInBytes), BYTES_PER_PIXEL, width, imageFile);
-        fwrite(padding, 1, paddingSize, imageFile);
+        written = fwrite(image + (i * widthInBytes), BYTES_PER_PIXEL, width, imageFile);
+        if (written != width)
+        {
+            perror("fwrite");
+            exit(1);
+        }
+        written = fwrite(padding, 1, paddingSize, imageFile);
+        if (written != paddingSize)
+        {
+            perror("fwrite");
+            exit(1);
+        }
     }
 
     fclose(imageFile);

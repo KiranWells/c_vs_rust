@@ -1,6 +1,6 @@
 # C vs. Rust: Mandelbrot
 
-This repository is a comparison between C and Rust, using a mandelbrot generator. The main goal is to see how close Rust can come to the efficiency of a highly optimized (at least in some respects) C program using threads and SIMD intrinsics. Because of this, the Rust version is implemented using unsafe code and raw pointers for the performance-critical portions.
+This repository is a comparison between C and Rust, using a mandelbrot generator. The main goal is to see how close Rust can come to the efficiency of a highly optimized (at least in some respects) C program using threads and SIMD intrinsics. ~~Because of this, the Rust version is implemented using unsafe code and raw pointers for the performance-critical portions.~~ The rust has been refactored to remove almost all unsafe code without significantly affecting performance (the only remaining unsafe is marking an unreachable branch, and has nothing to do with memory writes). 
 
 ## Results
 

@@ -2,7 +2,10 @@
 // https://stackoverflow.com/questions/2654480/writing-bmp-image-in-pure-c-c-without-other-libraries
 // used as a bitmap saving library
 
-use std::{fs, io::Write};
+use std::{
+    fs,
+    io::{BufWriter, Write},
+};
 
 /// red, green, & blue
 pub const BYTES_PER_PIXEL: usize = 3;
@@ -23,11 +26,13 @@ pub fn generate_bitmap_image(
 
     let stride = (width_in_bytes) + padding_size;
 
-    let mut image_file = fs::File::options()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(filename)?;
+    let mut image_file = BufWriter::new(
+        fs::File::options()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(filename)?,
+    );
 
     let file_header = create_bitmap_file_header(height, stride);
     image_file.write(&file_header)?;
@@ -35,10 +40,12 @@ pub fn generate_bitmap_image(
     let info_header = create_bitmap_info_header(height, width);
     image_file.write(&info_header)?;
 
-    for chunk in image.chunks(width_in_bytes) {
-        image_file.write(&chunk)?;
-        image_file.write(&padding)?;
+    for chunk in image.chunks_exact(width_in_bytes) {
+        image_file.write(chunk)?;
+        image_file.write(padding)?;
     }
+
+    image_file.flush()?;
     Ok(())
 }
 

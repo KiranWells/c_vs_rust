@@ -11,24 +11,20 @@
 mod bitmap;
 
 use bitmap::generate_bitmap_image;
-use std::time::SystemTime;
+use std::time::Instant;
 
 // Normally I would put this in a separate file, but
 // it is a bit unnecessary and it matches better with the C
 mod mandel {
     use crate::bitmap::BYTES_PER_PIXEL;
 
-    use std::alloc::{alloc, dealloc, Layout};
     use std::f64::consts::PI;
     use std::hint::unreachable_unchecked;
     use std::io::Write;
-    use std::ptr;
     use std::simd::{f64x4, Simd, SimdFloat, SimdPartialOrd, StdFloat};
-    use std::slice;
 
     /// Contains all necessary data for generating the image
     pub struct MandelImage {
-        data: *mut u8,
         n_threads: usize,
         // file data
         filename: String,
@@ -49,111 +45,58 @@ mod mandel {
         internal_brightness: f64,
     }
 
-    /// Contains the data necessary for the functions in threads.
-    ///
-    /// Ideally, this would be done in a cleaner way. This type is
-    /// only necessary to prevent the pointer from being dropped multiple times
-    /// and allow it to be shared mutably.
-    #[derive(Clone)]
-    struct PassedData {
-        data: *mut u8,
-        n_threads: usize,
-        width: usize,
-        height: usize,
-        // image parameters
-        max_iter: usize,
-        scale: f64,
-        zoom: f64,
-        offset: (f64, f64),
-        // colors
-        saturation: f64,
-        color_frequency: f64,
-        color_offset: f64,
-        glow_spread: f64,
-        glow_strength: f64,
-        brightness: f64,
-        internal_brightness: f64,
-    }
+    /// converts hsl to rgb, modified from
+    /// https://web.archive.org/web/20081227003853/http://mjijackson.com/2008/02/rgb-to-hsl-and-rgb-to-hsv-color-model-conversion-algorithms-in-javascript
+    fn hsl2rgb(h: f64, s: f64, v: f64) -> [u8; 3] {
+        let (r, g, b);
 
-    // this contains all functions which are inside a thread
-    impl PassedData {
-        /// converts hsl to rgb, modified from
-        /// https://web.archive.org/web/20081227003853/http://mjijackson.com/2008/02/rgb-to-hsl-and-rgb-to-hsv-color-model-conversion-algorithms-in-javascript
-        ///
-        /// ### Safety
-        /// Assumes it is the only concurrent instance running with a certain
-        /// `i` and `j`. Also assumes `i` and `j` are valid to use to dereference
-        /// self.data
-        unsafe fn set_hsl2rgb(&mut self, x: usize, y: usize, h: f64, s: f64, v: f64) {
-            let r;
-            let g;
-            let b;
+        let i = (h * 6.).floor();
+        let f = h * 6. - i;
+        let p = v * (1. - s);
+        let q = v * (1. - f * s);
+        let t = v * (1. - (1. - f) * s);
 
-            let i = (h * 6.).floor();
-            let f = h * 6. - i;
-            let p = v * (1. - s);
-            let q = v * (1. - f * s);
-            let t = v * (1. - (1. - f) * s);
-
-            match (i % 6.0) as u8 {
-                0 => {
-                    r = v;
-                    g = t;
-                    b = p;
-                }
-                1 => {
-                    r = q;
-                    g = v;
-                    b = p;
-                }
-                2 => {
-                    r = p;
-                    g = v;
-                    b = t;
-                }
-                3 => {
-                    r = p;
-                    g = q;
-                    b = v;
-                }
-                4 => {
-                    r = t;
-                    g = p;
-                    b = v;
-                }
-                5 => {
-                    r = v;
-                    g = p;
-                    b = q;
-                }
-                _ => unreachable_unchecked(),
-            }
-
-            // This is an external function in the C version
-            // this is just simpler
-            ptr::write(
-                self.data
-                    .offset((x * BYTES_PER_PIXEL + y * self.width * BYTES_PER_PIXEL) as isize + 2),
-                (r * 255.0) as u8,
-            );
-            ptr::write(
-                self.data
-                    .offset((x * BYTES_PER_PIXEL + y * self.width * BYTES_PER_PIXEL) as isize + 1),
-                (g * 255.0) as u8,
-            );
-            ptr::write(
-                self.data
-                    .offset((x * BYTES_PER_PIXEL + y * self.width * BYTES_PER_PIXEL) as isize + 0),
-                (b * 255.0) as u8,
-            );
+        match (i % 6.0) as u8 {
+            0 => (r, g, b) = (v, t, p),
+            1 => (r, g, b) = (q, v, p),
+            2 => (r, g, b) = (p, v, t),
+            3 => (r, g, b) = (p, q, v),
+            4 => (r, g, b) = (t, p, v),
+            5 => (r, g, b) = (v, p, q),
+            _ => unsafe { unreachable_unchecked() },
         }
 
-        /// calculates the color for a pixel `[i,j]` of the image
+        [(b * 255.0) as u8, (g * 255.0) as u8, (r * 255.0) as u8]
+    }
+
+    fn print_progress(percentage: f64) {
+        let mut stdout = std::io::stdout().lock();
+        write!(stdout, "\x1b[2K\x1b[0GProgress: |").unwrap();
+
+        for i in 0..40 {
+            if i as f64 / 40.0 < percentage {
+                write!(
+                    stdout,
+                    "\x1b[9{}m█\x1b[0m",
+                    [5, 1, 3, 2, 6, 4][(i as f64 / 40. * 6.) as usize]
+                )
+            } else {
+                write!(stdout, " ")
+            }
+            .unwrap()
+        }
+        write!(stdout, "| {:.2}%", percentage * 100.0).unwrap();
+        stdout.flush().unwrap();
+    }
+
+    impl MandelImage {
+        /// calculates the color for pixels starting at `[i,j]` and ending at `[i+4,j]`.
         ///
-        /// ### Safety
-        /// Assumes `i` and `j` are valid to use in `set_hsl2rgb`
-        #[target_feature(enable = "avx2")]
-        unsafe fn calc_pixel_mm(&mut self, i: usize, j: usize) {
+        /// `#[inline(always)]` is used to force the compiler to inline this function.
+        /// This is necessary for the compiler to optimize the code with avx2 instructions
+        /// (at least on the current nightly version)
+        #[inline(always)]
+        fn calc_pixel(&self, data: &mut [u8], i: usize, j: usize) {
             // TODO: add julia set capabilities
 
             // initialize values
@@ -261,19 +204,15 @@ mod mandel {
 
                 if extracted_step[v] as usize >= self.max_iter {
                     // color the inside using orbit trap method
-                    self.set_hsl2rgb(
-                        i + v,
-                        j,
+                    data[(i + v) * 3..(i + v) * 3 + 3].copy_from_slice(&hsl2rgb(
                         0.0,
                         0.0,
                         ((extracted_orbit[v]).sqrt() * self.brightness * self.internal_brightness)
                             .clamp(0.0, 1.0),
-                    );
+                    ));
                 } else {
                     // color the outside
-                    self.set_hsl2rgb(
-                        i + v,
-                        j,
+                    data[(i + v) * 3..(i + v) * 3 + 3].copy_from_slice(&hsl2rgb(
                         // color hue based on an sinusoidal step counter, offset to a [0,1] range
                         (((smoothed_step * 0.05 * self.color_frequency - self.color_offset * PI)
                             .sin())
@@ -284,90 +223,75 @@ mod mandel {
                         (self.saturation * (1.0 - (glow * glow))).clamp(0.0, 1.0),
                         // use glow around edges for brightness
                         (glow * self.brightness).clamp(0.0, 1.0),
-                    );
+                    ));
                 }
             }
+        }
+
+        #[target_feature(enable = "avx2")]
+        unsafe fn calc_pixel_mm(&self, data: &mut [u8], i: usize, j: usize) {
+            self.calc_pixel(data, i, j);
         }
 
         /// calculates one thread's portion of the image.
         /// also prints progress in the first thread (id=0)
-        ///
-        /// ### Safety
-        /// Assumes it is running in parallel with a unique thread_id,
-        /// calling multiple concurrent instances with the same thread_id
-        /// may lead to data races
-        unsafe fn calc_image_region(mut self, start_height: usize, thread_id: usize) {
-            for j in (start_height..self.height).step_by(self.n_threads) {
+        fn calc_image_region(&self, lines: Vec<(usize, &mut [u8])>, t: usize) {
+            for (j, line) in lines {
                 // print progress bar
-                if thread_id == 0 && j % (self.n_threads * 4) == 0 {
+                if t == 0 && j % 64 == 0 {
                     let percentage = j as f64 / self.height as f64;
-                    print!("\x1b[2K\x1b[0GProgress: |");
-                    for i in 0..40 {
-                        if i as f64 / 40.0 < percentage {
-                            print!(
-                                "\x1b[9{}m█\x1b[0m",
-                                [5, 1, 3, 2, 6, 4][(i as f64 / 40. * 6.) as usize]
-                            );
-                        } else {
-                            print!(" ");
-                        }
-                    }
-                    print!("| {:.2}%", percentage * 100.0);
-                    std::io::stdout().flush().unwrap();
+                    print_progress(percentage);
                 }
-                // actual calculation
+                let avx2 = is_x86_feature_detected!("avx2");
                 for i in (0..self.width).step_by(4) {
-                    self.calc_pixel_mm(i, j);
+                    if avx2 {
+                        unsafe {
+                            self.calc_pixel_mm(line, i, j);
+                        }
+                    } else {
+                        self.calc_pixel(line, i, j);
+                    }
                 }
             }
-            // print a 100% message. This is not strictly necessary, but it looks nicer
-            if thread_id != 0 {
-                return;
+            // print complete progress bar
+            if t == 0 {
+                print_progress(1.0);
+                println!();
             }
-            print!("\x1b[2K\x1b[0GProgress: |");
-            for i in 0..40 {
-                print!(
-                    "\x1b[9{}m█\x1b[0m",
-                    [5, 1, 3, 2, 6, 4][(i as f64 / 40. * 6.) as usize]
-                );
-            }
-            println!("| {:.2}%", 100.0);
         }
-    }
 
-    // PassedData is only a mutable borrow into the MandelImage
-    // all functions which use it know this, and it should not be used otherwise
-    unsafe impl Send for PassedData {}
-
-    impl MandelImage {
         /// handles the dispatch of all threads
-        pub fn run_threads(&mut self) {
-            (0..self.n_threads)
-                .into_iter()
-                .map(|t| {
-                    let passable = PassedData {
-                        data: self.data,
-                        n_threads: self.n_threads,
-                        width: self.width,
-                        height: self.height,
-                        max_iter: self.max_iter,
-                        scale: self.scale,
-                        zoom: self.zoom,
-                        offset: self.offset,
-                        saturation: self.saturation,
-                        color_frequency: self.color_frequency,
-                        color_offset: self.color_offset,
-                        glow_spread: self.glow_spread,
-                        glow_strength: self.glow_strength,
-                        brightness: self.brightness,
-                        internal_brightness: self.internal_brightness,
-                    };
-                    std::thread::spawn(move || unsafe { passable.calc_image_region(t, t) })
-                })
-                // force the threads to start by consuming the iterator
-                .collect::<Vec<_>>()
-                .into_iter()
-                .for_each(|t| t.join().unwrap());
+        pub fn run_threads(&self) -> Vec<u8> {
+            // The image data is created here to prevent MandelImage
+            // from owning the data, which would make it impossible
+            // to pass to the threads without either cloning or making
+            // the data immutable.
+
+            // create the image buffer
+            let mut data = vec![0_u8; self.width * self.height * BYTES_PER_PIXEL];
+            // split image into lines for each thread
+            let lines = data.chunks_exact_mut(self.width * BYTES_PER_PIXEL);
+            // interleave the lines to distribute the work evenly
+            let mut interleaved_lines: Vec<Vec<(usize, &mut [u8])>> = (0..self.n_threads)
+                .map(|_| Vec::with_capacity(self.width * BYTES_PER_PIXEL))
+                .collect();
+            lines.enumerate().for_each(|(i, line)| {
+                interleaved_lines[i % self.n_threads].push((i, line));
+            });
+            // thread::scope allows the threads to borrow data from the parent thread
+            // because the threads are joined before the scope ends, ensuring that
+            // the data lives for the entire duration of each thread
+            std::thread::scope(|scope| {
+                interleaved_lines
+                    .into_iter()
+                    .enumerate()
+                    .map(|(t, lines)| scope.spawn(move || self.calc_image_region(lines, t)))
+                    // force the threads to start by consuming the iterator
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .for_each(|t| t.join().unwrap());
+            });
+            data
         }
 
         /// the usage info for the program, printed on --help
@@ -393,7 +317,6 @@ mod mandel {
         /// Creates a new image instance from the process arguments
         pub fn create_from_args() -> Self {
             let mut image = MandelImage {
-                data: ptr::null_mut(),
                 n_threads: num_cpus::get(),
                 filename: String::new(),
                 width: 1920,
@@ -479,12 +402,6 @@ mod mandel {
                 std::process::exit(1);
             }
 
-            // allocate necessary memory
-            let layout = Layout::array::<u8>(image.width * image.height * BYTES_PER_PIXEL)
-                .expect("Failed to make layout for array!");
-
-            image.data = unsafe { alloc(layout) };
-
             // print final parsed options
             println!("Running with options: \n");
             println!("\tWidth:\t\t\t{}", image.width);
@@ -509,13 +426,6 @@ mod mandel {
             image
         }
 
-        /// Returns a slice referencing the internal data of this function
-        pub fn get_data(&self) -> &[u8] {
-            unsafe {
-                &*slice::from_raw_parts(self.data, self.width * self.height * BYTES_PER_PIXEL)
-            }
-        }
-
         pub fn width(&self) -> usize {
             self.width
         }
@@ -526,56 +436,40 @@ mod mandel {
             self.filename.as_str()
         }
     }
-
-    impl Drop for MandelImage {
-        fn drop(&mut self) {
-            // deallocate owned memory
-            let layout =
-                std::alloc::Layout::array::<u8>(self.width * self.height * BYTES_PER_PIXEL)
-                    .expect("Failed to make layout for array!");
-            unsafe { dealloc(self.data, layout) };
-        }
-    }
 }
 
 fn main() {
-    let total_start = SystemTime::now();
+    let total_start = Instant::now();
 
-    let mut image = mandel::MandelImage::create_from_args();
+    let image = mandel::MandelImage::create_from_args();
 
     println!("Rendering...");
-    let render_start = SystemTime::now();
-    image.run_threads();
-    let render_end = SystemTime::now();
+    let render_start = Instant::now();
+    let image_data = image.run_threads();
+    let render_end = Instant::now();
 
     println!("Saving...");
-    let save_start = SystemTime::now();
-    if let Err(e) = generate_bitmap_image(
-        image.get_data(),
-        image.height(),
-        image.width(),
-        image.filename(),
-    ) {
+    let save_start = Instant::now();
+    if let Err(e) =
+        generate_bitmap_image(&image_data, image.height(), image.width(), image.filename())
+    {
         println!("Failed to save image: {:?}", e);
         std::process::exit(1);
     }
-    let save_end = SystemTime::now();
+    let save_end = Instant::now();
 
     println!("Done.");
     println!();
 
     // print elapsed time
-    let total_end = SystemTime::now();
+    let total_end = Instant::now();
     println!(
         "Time:
     Rendering:\t{:.2} s
     Saving:\t{:.2} s
     Total:\t{:.2} s",
-        render_end
-            .duration_since(render_start)
-            .unwrap()
-            .as_secs_f64(),
-        save_end.duration_since(save_start).unwrap().as_secs_f64(),
-        total_end.duration_since(total_start).unwrap().as_secs_f64()
+        render_end.duration_since(render_start).as_secs_f64(),
+        save_end.duration_since(save_start).as_secs_f64(),
+        total_end.duration_since(total_start).as_secs_f64()
     );
 }

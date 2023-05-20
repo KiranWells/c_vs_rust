@@ -1,12 +1,12 @@
 # C vs. Rust: Mandelbrot
 
-This repository is a comparison between C and Rust, using a mandelbrot generator. The main goal is to see how close Rust can come to the efficiency of a highly optimized (at least in some respects) C program using threads and SIMD intrinsics. ~~Because of this, the Rust version is implemented using unsafe code and raw pointers for the performance-critical portions.~~ The rust has been refactored to remove almost all unsafe code without significantly affecting performance (the only remaining unsafe is marking an unreachable branch, and has nothing to do with memory writes). 
+This repository is a comparison between C and Rust, using a Mandelbrot fractal generator. The main goal is to see how close Rust can come to the efficiency of a highly optimized (at least in some respects) C program using threads and SIMD compiler intrinsics. ~~Because of this, the Rust version is implemented using unsafe code and raw pointers for the performance-critical portions.~~ The Rust code has been refactored to remove almost all unsafe code without significantly affecting performance (the only remaining unsafe is marking an unreachable branch, and has nothing to do with memory writes). 
 
 ## Results
 
 In testing on my local machine, I was able to get the runtime of both implementations to be almost indistinguishable. The only noticeable performance difference is in the bitmap saving code, which makes up a very small portion of the run time.
 
-Sample execution time for default image rendered at 7680x4320 pixels:
+Sample execution time for default image rendered at 7680×4320 pixels:
 
 ```
 $ cargo run --release -- out.bmp -w 7680 -h 4320
@@ -20,7 +20,7 @@ Time:
 zsh time command:
 cargo run --release -- out.bmp -w 7680 -h 4320  25.35s user 0.19s system 710% cpu 3.596 total
 
-$ ./mandel out.bmp -w 7680 -h 4320 
+$ ./mandel out.bmp -w 7680 -h 4320
 
 Internal timing:
 Time:
@@ -36,7 +36,7 @@ zsh time command:
 
 ### Requirements:
 
-Both implementations require advanced vector extensions to run as intended, and the C code is only known to support linux-based systems.
+Both implementations require advanced vector extensions to run as intended, and the C code is only known to support Linux-based systems.
 
 The C code can be compiled by executing `make` in the `mandel_c` folder. The rust code can be compiled by running `cargo build --release` in the `mandel_rs` folder.
 

@@ -21,11 +21,16 @@ mod mandel {
     use std::f64::consts::PI;
     use std::hint::unreachable_unchecked;
     use std::io::Write;
-    use std::simd::{f64x4, Simd, SimdFloat, SimdPartialOrd, StdFloat};
+    use std::num::NonZeroUsize;
+    use std::simd::{Simd, SimdFloat, SimdPartialOrd, StdFloat};
+    use std::thread::available_parallelism;
+
+    const SIMD_WIDTH: usize = 4;
+    type SimdFloatVec = std::simd::f64x4;
 
     /// Contains all necessary data for generating the image
     pub struct MandelImage {
-        n_threads: usize,
+        n_threads: NonZeroUsize,
         // file data
         filename: String,
         width: usize,
@@ -100,12 +105,12 @@ mod mandel {
             // TODO: add julia set capabilities
 
             // initialize values
-            let mm_ones: f64x4 = Simd::splat(1.0);
-            let mm_zero: f64x4 = Simd::splat(0.0);
+            let mm_ones: SimdFloatVec = Simd::splat(1.0);
+            let mm_zero: SimdFloatVec = Simd::splat(0.0);
 
             // c: complex number
             let c_real = Simd::from_array([
-                ((i + 0) as f64 / self.width as f64 - 0.5) * self.scale + self.offset.0,
+                (i as f64 / self.width as f64 - 0.5) * self.scale + self.offset.0,
                 ((i + 1) as f64 / self.width as f64 - 0.5) * self.scale + self.offset.0,
                 ((i + 2) as f64 / self.width as f64 - 0.5) * self.scale + self.offset.0,
                 ((i + 3) as f64 / self.width as f64 - 0.5) * self.scale + self.offset.0,
@@ -228,8 +233,27 @@ mod mandel {
             }
         }
 
+        // AVX2, AVX, and SSE4.1 implementations are identical to the scalar implementation
+        // except for the target_feature annotations and the function names. (the portable
+        // simd utilities provided by the std library do the heavy lifting)
         #[target_feature(enable = "avx2")]
-        unsafe fn calc_pixel_mm(&self, data: &mut [u8], i: usize, j: usize) {
+        #[inline]
+        #[allow(dead_code)]
+        unsafe fn calc_pixel_avx2(&self, data: &mut [u8], i: usize, j: usize) {
+            self.calc_pixel(data, i, j);
+        }
+
+        #[target_feature(enable = "avx")]
+        #[inline]
+        #[allow(dead_code)]
+        unsafe fn calc_pixel_avx(&self, data: &mut [u8], i: usize, j: usize) {
+            self.calc_pixel(data, i, j);
+        }
+
+        #[target_feature(enable = "sse4.1")]
+        #[inline]
+        #[allow(dead_code)]
+        unsafe fn calc_pixel_sse4(&self, data: &mut [u8], i: usize, j: usize) {
             self.calc_pixel(data, i, j);
         }
 
@@ -242,14 +266,49 @@ mod mandel {
                     let percentage = j as f64 / self.height as f64;
                     print_progress(percentage);
                 }
-                let avx2 = is_x86_feature_detected!("avx2");
-                for i in (0..self.width).step_by(4) {
-                    if avx2 {
-                        unsafe {
-                            self.calc_pixel_mm(line, i, j);
+                for i in (0..self.width).step_by(SIMD_WIDTH) {
+                    // select the correct implementation based on target features
+
+                    // compile time feature detection first
+                    #[cfg(target_feature = "avx2")]
+                    unsafe {
+                        self.calc_pixel_avx2(line, i, j);
+                    }
+                    #[cfg(all(target_feature = "avx", not(target_feature = "avx2")))]
+                    unsafe {
+                        self.calc_pixel_avx(line, i, j);
+                    }
+                    #[cfg(all(
+                        target_feature = "sse4.1",
+                        not(any(target_feature = "avx2", target_feature = "avx"))
+                    ))]
+                    unsafe {
+                        self.calc_pixel_sse4(line, i, j);
+                    }
+
+                    // runtime feature detection as fallback (this does not seem to have any
+                    // measurable performance impact compared to the compile time feature detection)
+                    #[cfg(not(any(
+                        target_feature = "avx2",
+                        target_feature = "avx",
+                        target_feature = "sse4.1"
+                    )))]
+                    {
+                        if is_x86_feature_detected!("avx2") {
+                            unsafe {
+                                self.calc_pixel_avx2(line, i, j);
+                            }
+                        } else if is_x86_feature_detected!("avx") {
+                            unsafe {
+                                self.calc_pixel_avx(line, i, j);
+                            }
+                        } else if is_x86_feature_detected!("sse4.1") {
+                            unsafe {
+                                self.calc_pixel_sse4(line, i, j);
+                            }
+                        } else {
+                            self.calc_pixel(line, i, j);
                         }
-                    } else {
-                        self.calc_pixel(line, i, j);
                     }
                 }
             }
@@ -272,7 +331,7 @@ mod mandel {
             // split image into lines for each thread
             let lines = data.chunks_exact_mut(self.width * BYTES_PER_PIXEL);
             // interleave the lines to distribute the work evenly
-            let mut interleaved_lines: Vec<Vec<(usize, &mut [u8])>> = (0..self.n_threads)
+            let mut interleaved_lines: Vec<Vec<(usize, &mut [u8])>> = (0..self.n_threads.get())
                 .map(|_| Vec::with_capacity(self.width * BYTES_PER_PIXEL))
                 .collect();
             lines.enumerate().for_each(|(i, line)| {
@@ -317,7 +376,7 @@ mod mandel {
         /// Creates a new image instance from the process arguments
         pub fn create_from_args() -> Self {
             let mut image = MandelImage {
-                n_threads: num_cpus::get(),
+                n_threads: available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap()),
                 filename: String::new(),
                 width: 1920,
                 height: 1080,
@@ -396,7 +455,7 @@ mod mandel {
                     std::process::exit(1);
                 }
             }
-            if image.filename.len() == 0 {
+            if image.filename.is_empty() {
                 println!("Output filename required.");
                 println!("usage: {} {}", exe_name, Self::USAGE);
                 std::process::exit(1);

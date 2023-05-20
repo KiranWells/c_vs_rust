@@ -35,14 +35,14 @@ pub fn generate_bitmap_image(
     );
 
     let file_header = create_bitmap_file_header(height, stride);
-    image_file.write(&file_header)?;
+    image_file.write_all(&file_header)?;
 
     let info_header = create_bitmap_info_header(height, width);
-    image_file.write(&info_header)?;
+    image_file.write_all(&info_header)?;
 
     for chunk in image.chunks_exact(width_in_bytes) {
-        image_file.write(chunk)?;
-        image_file.write(padding)?;
+        image_file.write_all(chunk)?;
+        image_file.write_all(padding)?;
     }
 
     image_file.flush()?;
@@ -60,15 +60,15 @@ fn create_bitmap_file_header(height: usize, stride: usize) -> [u8; 14] {
     //     0,0,0,0, /// start of pixel array
     // ];
 
-    file_header[0] = 'B' as u8;
-    file_header[1] = 'M' as u8;
+    file_header[0] = b'B';
+    file_header[1] = b'M';
     file_header[2] = (file_size) as u8;
     file_header[3] = (file_size >> 8) as u8;
     file_header[4] = (file_size >> 16) as u8;
     file_header[5] = (file_size >> 24) as u8;
     file_header[10] = (FILE_HEADER_SIZE + INFO_HEADER_SIZE) as u8;
 
-    return file_header;
+    file_header
 }
 
 fn create_bitmap_info_header(height: usize, width: usize) -> [u8; 40] {
@@ -96,8 +96,8 @@ fn create_bitmap_info_header(height: usize, width: usize) -> [u8; 40] {
     info_header[9] = (height >> 8) as u8;
     info_header[10] = (height >> 16) as u8;
     info_header[11] = (height >> 24) as u8;
-    info_header[12] = (1) as u8;
+    info_header[12] = 1;
     info_header[14] = (BYTES_PER_PIXEL * 8) as u8;
 
-    return info_header;
+    info_header
 }
